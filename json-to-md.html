@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/css/bootstrap.min.css" rel="stylesheet"
+          integrity="sha384-9aIt2nRpC12Uk9gS9baDl411NQApFmC26EwAOH8WgZl5MYYxFfc+NcPb1dKGj7Sk" crossorigin="anonymous">
+    <title>Slack to Markdown</title>
+</head>
+<body class="bg-dark">
+<div class="jumbotron text-center p-3 my-3 bg-dark text-white">
+    <h1>Slack Json To Markdown</h1>
+</div>
+
+<div class="container bg-white p-10">
+    <div>
+        <div class="row p-3 my-3 bg-primary text-white">
+            <h2>1. Upload 'users.json' file</h2>
+        </div>
+        <div class="row">
+            <input id="users" type="file" accept="application/json"/>
+        </div>
+    </div>
+    <div>
+        <div class="row p-3 my-3 bg-primary text-white">
+            <h2>2. Upload Slack Chat Logs Files</h2>
+        </div>
+        <div class="row">
+            <input id="chatLog" type="file" accept="application/json" multiple/>
+        </div>
+    </div>
+    <div>
+        <div class="row p-3 my-3 bg-primary text-white">
+            <h2>3. Click the convert Button</h2>
+        </div>
+        <div class="row">
+            <button id="convert-btn">Convert</button>
+        </div>
+    </div>
+
+    <div id="output" class="d-none">
+        <div class="row my-3">
+            <button id="download">Download</button>
+        </div>
+        <div id="mdText" markdown="1"></div>
+    </div>
+</div>
+</body>
+
+<script>
+    window.addEventListener("load", eventBinding);
+    let mdText;
+
+    function eventBinding() {
+        document.getElementById('convert-btn').addEventListener('click', convertJsonToMd);
+        document.getElementById('download').addEventListener('click', download);
+    }
+
+    async function convertJsonToMd() {
+        mdText = "";
+        document.getElementById('output').classList.remove('d-none');
+        const userInfo = await users.getInfo();
+        const chatLog = await chat.getLog();
+        mdText = converter.jsonToMd(userInfo, chatLog);
+        document.getElementById("mdText").innerText = mdText;
+    }
+
+    function download() {
+        const element = document.createElement('a');
+        element.setAttribute('href', 'data:text/plain;charset=utf-8,' + encodeURIComponent(mdText));
+        element.setAttribute('download', "slack-markdown.md");
+
+        element.style.display = 'none';
+        document.body.appendChild(element);
+
+        element.click();
+        document.body.removeChild(element);
+    }
+
+    /**
+     * users.json 파일로부터 user 정보를 배열로 받아온다.
+     * 배열은 json의 'id'값을 key로 사용한다. ex) users['UV32QS4Q3']
+     * @returns {array}
+     * @private
+     */
+    const users = (function () {
+        return {
+            getInfo: async function () {
+                const usersJson = await fileReader(document.getElementById('users').files[0]);
+                const userObj = JSON.parse(usersJson);
+
+                return userObj.reduce(function (map, obj) {
+                    map[obj.id] = obj;
+                    return map;
+                }, {});
+            }
+        }
+    }());
+
+    /**
+     * chatLogJson 파일들로부터 chatLog 맵 객체로 변환한다.
+     * 키값으로 json의 'ts'를 사용한다.
+     * @returns {map}
+     */
+    const chat = (function () {
+        /**
+         * chatLog.json 파일들을 하나의 Json파일로 통합한다.
+         * - 파일들은 날짜순으로 오름차순 정렬된다.
+         * @returns {string}
+         * @private
+         */
+        async function _combineChatLogFiles() {
+            let chatLog = document.getElementById('chatLog');
+
+            // 날짜순으로 정렬
+            chatLog = Array.from(chatLog.files).sort((a, b) => {
+                if (a.name < b.name) {
+                    return -1;
+                }
+                if (a.name > b.name) {
+                    return 1;
+                }
+
+                return 0;
+            });
+
+
+            //json 파일 하나로 통합
+            let chatLogJson;
+            chatLogJson = '[';
+            for (const [i, file] of chatLog.entries()) {
+                let textFile = await fileReader(file);
+                // 각 파일들의 대괄호 [ , ] 는 제거
+                chatLogJson += textFile.substring(1, textFile.length - 1);
+                if (i !== chatLog.length - 1) {
+                    chatLogJson += ',';
+                }
+            }
+            chatLogJson += ']';
+
+            return chatLogJson;
+        }
+
+        return {
+            getLog: async function () {
+                const chatLogJson = JSON.parse(await _combineChatLogFiles());
+
+                let chatMap = new Map();
+                // 리플인지 아닌지 확인하고, 리플이면 본문에 넣어줌
+                chatLogJson.forEach(function (value) {
+                    if (_isReply(value)) {
+                        let origin = chatMap.get(value['thread_ts']);
+                        if (origin === undefined) {
+                            console.error('UNDEFINED ORIGIN CHAT', value['text']);
+                            return;
+                        }
+                        origin.reply.push(value);
+                    } else {
+                        value.reply = [];
+                        chatMap.set(value['ts'], value);
+                    }
+                });
+
+                return chatMap;
+            }
+        };
+    }());
+
+
+    /**
+     * Json파일에서 추출한 users와 chatLog를 이용하여서 MarkDown 텍스트파일로 변환한다.
+     * @returns {string}
+     * @private
+     */
+    const converter = (function () {
+        /**
+         * MarkDown으로 출력할 유저 이름을 반환한다.
+         * @returns {string}
+         * @private
+         */
+        function _getUserName(users, value) {
+            const realName = users[value['user']]['profile']['real_name'];
+            const thumbNailImg = users[value['user']]['profile']['image_48'];
+
+            return `<img src="${thumbNailImg}" alt="${realName}" width="30px"> **${realName}**`;
+        }
+
+        /**
+         * MarkDown으로 출력할 날짜를 반환한다.
+         * @returns {string}
+         * @private
+         */
+        function _getDate(value) {
+            return `(${new Date(value['ts'] * 1000).toLocaleString()})`;
+        }
+
+        /**
+         * MarkDown으로 출력할 채팅 내용을 반환한다.
+         * @returns {string}
+         * @private
+         */
+        function _getContent(value) {
+            // 리플에 들여쓰기
+            String.prototype.indent = function () {
+                return this.replace(/\n/g, '\n    ');
+            };
+
+            // \n이 한개뿐이면 개행이 되지 않아 하나 더 추가한다.
+            String.prototype.addOneMoreLineBreak = function () {
+                return this.replace(/\n/g, '\n\n');
+            };
+
+            //코드 블럭으로 조정하기
+            String.prototype.adjustCodeBlock = function () {
+                return this.replace(/\n\n/g, '\n')
+                    .replace(/```/g, '\n```\n')
+                    .replace(/&lt;/g, '<')
+                    .replace(/&gt;/g, '>')
+                    .replace(/&amp;/g, '&')
+                    .replace(/&quot;/g, '"');
+            };
+
+            // 일반 텍스트 메시지인 경우
+            if (value['text']) {
+                if (_isReply(value)) {
+                    return `    ${value['text'].addOneMoreLineBreak().adjustCodeBlock().indent()}`;
+                }
+                return `${value['text'].addOneMoreLineBreak().adjustCodeBlock()}`;
+            }
+
+            // (이미지) 파일인 경우 파일내용을 출력한다.
+            if (value['files']) {
+                return value['files']
+                    .map(file => `![${file['name']}](${file['url_private']})`)
+                    .join('\n');
+            }
+
+            console.error('No Content', value);
+            return "";
+        }
+
+        return {
+            jsonToMd: function (userInfo, chatLog) {
+                let mdText = "";
+                chatLog.forEach(value => {
+                    if (!_isReply(value)) {
+                        mdText += `${_getUserName(userInfo, value)} ${_getDate(value)}\n\n${_getContent(value)}\n\n`;
+
+                        //리플 붙이기
+                        value.reply.forEach(replyValue => {
+                            mdText += `- ${_getUserName(userInfo, replyValue)} ${_getDate(replyValue)}\n\n${_getContent(replyValue)}\n\n`;
+                        });
+                        mdText += '---\n';
+                    }
+                });
+
+                return mdText;
+            }
+        };
+    }());
+
+
+    /**
+     * 파라미터로 전달된 file을 읽어드려
+     * @returns {Promise<string>}
+     * @private
+     */
+    const fileReader = (function (file) {
+        return new Promise((resolve) => {
+            let fr = new FileReader();
+            fr.onload = () => {
+                resolve(fr.result);
+            };
+            fr.readAsText(file, "utf-8");
+        })
+    });
+
+    /**
+     * 리플인지 아닌지 판단한다.
+     * @param chat
+     * @returns {boolean}
+     * @private
+     */
+    function _isReply(chat) {
+        return chat['thread_ts'] !== undefined && chat['thread_ts'] !== chat['ts'];
+    }
+
+    //todo [http://bit.ly/2NZ1l7u|Asserts] 링크이상
+    //todo users.json이랑 파일들 존재하는지 확인, 이름 확인
+</script>
+</html>
