@@ -1,7 +1,7 @@
-# slack-json-to-markdown
+# Slack Json to Markdown
 Slack doesn't erase conversation history even if it's a **free plan**! It is saved as json file.
 
-This helps you change the json conversation to markdown!!
+This simple application helps you change the json conversation to markdown!!
 
 https://siyoon210.github.io/slack-json-to-markdown/
 
